@@ -1,0 +1,4 @@
+# CodexSearcher는 기본적으로 표준 라이브러리만 사용합니다.
+# 시스템에 gh CLI가 없으면 GitHub API 요청이 필요하므로 gh 로그인/인증이 필요할 수 있습니다.
+
+# Python dependencies: none
