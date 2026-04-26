@@ -2,8 +2,9 @@
 """CodexSearcher 핵심 오케스트레이션 스크립트.
 
 - Agent 1: GitHub 레포지토리 탐색
-- Agent 2: 스타/설명 기반 실효성 분석
-- Agent 3: 최종 필터링 및 제안 작성
+- Agent 2: 생산성 중심 분석
+- Agent 3: 일상 앱 스카우트
+- Agent 4: 최종 검토
 """
 
 from __future__ import annotations
@@ -26,7 +27,6 @@ PRODUCTIVITY_KEYWORDS = {
     "orchestrat",
     "workflow",
     "integration",
-    "workflow",
     "switch",
     "skill",
     "manager",
@@ -39,6 +39,38 @@ PRODUCTIVITY_KEYWORDS = {
     "automation",
 }
 
+LIFESTYLE_APP_KEYWORDS = {
+    "daily",
+    "habit",
+    "journal",
+    "diary",
+    "planner",
+    "finance",
+    "budget",
+    "health",
+    "fitness",
+    "exercise",
+    "music",
+    "photo",
+    "album",
+    "recipe",
+    "cooking",
+    "travel",
+    "pet",
+    "home",
+    "family",
+    "learning",
+    "study",
+    "chat",
+    "voice",
+    "game",
+    "gamification",
+    "mood",
+    "weather",
+    "calendar",
+    "memo",
+}
+
 INDIE_APP_KEYWORDS = {
     "mobile",
     "web",
@@ -46,9 +78,7 @@ INDIE_APP_KEYWORDS = {
     "app",
     "ui",
     "client",
-    "dashboard",
     "voice",
-    "kanban",
     "chat",
     "knowledge graph",
     "graph",
@@ -81,9 +111,8 @@ def normalize_repo(item: dict) -> dict:
     }
 
 
-def classify(label: str, text: str) -> int:
-    t = text.lower()
-    return sum(1 for kw in label.split() if kw.lower() in t)
+def _score_keywords(text: str, keywords: set[str]) -> int:
+    return sum(kw in text for kw in keywords)
 
 
 def analyze(repos: list[dict]) -> tuple[list[dict], dict[str, list[dict]]]:
@@ -92,28 +121,36 @@ def analyze(repos: list[dict]) -> tuple[list[dict], dict[str, list[dict]]]:
 
     for r in repos:
         desc = (r["description"] or "").lower()
-        prod_score = sum(kw in desc for kw in PRODUCTIVITY_KEYWORDS)
-        indie_score = sum(kw in desc for kw in INDIE_APP_KEYWORDS)
+
+        prod_score = _score_keywords(desc, PRODUCTIVITY_KEYWORDS)
+        indie_score = _score_keywords(desc, INDIE_APP_KEYWORDS)
+        life_score = _score_keywords(desc, LIFESTYLE_APP_KEYWORDS)
 
         tags = []
+        life_tags = []
+
         if prod_score >= 2:
             tags.append("productivity")
         if indie_score >= 1:
             tags.append("indie-app")
+        if life_score >= 2:
+            life_tags.append("daily-life")
 
         status = "hold"
-        if r["stars"] >= 10000 and tags:
+        if r["stars"] >= 10000 and (tags or life_tags):
             status = "pass"
-        elif r["stars"] >= 5000 and (tags or r["stars"] >= 20000):
+        elif r["stars"] >= 5000 and (tags or life_tags or r["stars"] >= 20000):
             status = "review"
 
         analysis = {
             **r,
             "productivity_score": prod_score,
             "indie_score": indie_score,
+            "lifestyle_score": life_score,
             "status": status,
             "tags": tags,
-            "recommendation": _recommendation(r, tags, prod_score, indie_score),
+            "lifestyle_tags": life_tags,
+            "recommendation": _recommendation(r, tags, life_tags, prod_score, indie_score, life_score),
         }
         analyzed.append(analysis)
         buckets[status].append(analysis)
@@ -121,16 +158,40 @@ def analyze(repos: list[dict]) -> tuple[list[dict], dict[str, list[dict]]]:
     return analyzed, buckets
 
 
-def _recommendation(repo: dict, tags: list[str], pscore: int, iscore: int) -> str:
-    if "productivity" in tags and "indie-app" in tags:
-        return "high_priority"
+def _recommendation(
+    repo: dict,
+    tags: list[str],
+    life_tags: list[str],
+    pscore: int,
+    iscore: int,
+    lscore: int,
+) -> str:
+    if "productivity" in tags and "daily-life" in life_tags:
+        return "dual_priority"
     if "productivity" in tags:
         return "productivity"
+    if "daily-life" in life_tags:
+        return "daily_app"
     if "indie-app" in tags:
         return "indie"
     if repo["stars"] >= 20000:
         return "watchlist"
+    if lscore >= 1:
+        return "interesting_lifestyle"
     return "monitor"
+
+
+def _fmt_list(items: list[dict], section: str) -> list[str]:
+    lines: list[str] = []
+    for r in items:
+        lines.append(
+            f"- **{r['name']}**: stars {r['stars']:,}, "
+            f"prod={r['productivity_score']}, indie={r['indie_score']}, "
+            f"life={r['lifestyle_score']}, rec={r['recommendation']} ({section})"
+        )
+    if not lines:
+        lines.append("- (해당 없음)")
+    return lines
 
 
 def build_report(query: str, repos: list[dict], analyzed: list[dict], buckets: dict[str, list[dict]], outfile: Path) -> None:
@@ -141,15 +202,16 @@ def build_report(query: str, repos: list[dict], analyzed: list[dict], buckets: d
     lines = []
     if not outfile.exists():
         header = [
-            f"# CodexSearcher 조사 보고서",
+            "# CodexSearcher 조사 보고서",
             "",
             f"- 생성일: {date}",
-            "- 목적: 코덱스 관련 GitHub 레포지토리 3에이전트 협업 분석",
+            "- 목적: 코덱스 관련 GitHub 레포지토리 4에이전트 협업 분석",
             "",
             "---",
         ]
         lines.extend(header)
 
+    # Agent 1: Discovery
     lines.extend([
         f"## 조사 세션 {ts}",
         f"- 조사 일시: {now.isoformat(timespec='seconds')}",
@@ -166,27 +228,91 @@ def build_report(query: str, repos: list[dict], analyzed: list[dict], buckets: d
         desc = (r["description"] or "-").replace("|", "/")
         lines.append(f"| {r['name']} | {r['stars']:,} | {desc} | {r['url']} | {r['created']} | {r['updated']} |")
 
-    lines.extend(["", "### Agent 2. 분석 결과", "", "#### PASS"])
-    for r in buckets["pass"]:
-        lines.append(f"- **{r['name']}**: stars {r['stars']:,}, tag={','.join(r['tags']) or 'none'} => {r['recommendation']}")
+    # Agent 2: Productivity
+    lines.extend(["", "### Agent 2. 생산성 분석"])
+    lines.extend(["#### PASS"])
+    lines.extend(_fmt_list(buckets["pass"], "productivity"))
 
     lines.extend(["", "#### REVIEW"])
-    for r in buckets["review"]:
-        lines.append(f"- **{r['name']}**: stars {r['stars']:,}, prod={r['productivity_score']}, indie={r['indie_score']}, rec={r['recommendation']}")
+    lines.extend(_fmt_list(buckets["review"], "productivity"))
 
     lines.extend(["", "#### HOLD"])
-    for r in buckets["hold"][:8]:
-        lines.append(f"- **{r['name']}**: stars {r['stars']:,}, prod={r['productivity_score']}, indie={r['indie_score']}, rec={r['recommendation']}")
+    lines.extend(_fmt_list(buckets["hold"][:8], "productivity"))
 
+    # Agent 3: Daily app scouting
+    daily_pass = [r for r in analyzed if "daily-life" in r["lifestyle_tags"] and r["status"] in {"pass", "review"}]
+    daily_hold = [r for r in analyzed if "daily-life" in r["lifestyle_tags"] and r["status"] == "hold"]
+    daily_pass = sorted(daily_pass, key=lambda x: (-(x["lifestyle_score"]), -x["stars"]))
+    daily_hold = sorted(daily_hold, key=lambda x: (-(x["lifestyle_score"]), -x["stars"]))
+
+    lines.extend(["", "### Agent 3. 일상 앱 스카우트"])
+    lines.extend(["#### 생활형 PASS"])
+    if daily_pass:
+        for r in daily_pass:
+            lines.append(
+                f"- **{r['name']}**: stars {r['stars']:,}, "
+                f"lifestyle_score {r['lifestyle_score']}, rec={r['recommendation']}"
+            )
+    else:
+        lines.append("- (해당 없음)")
+
+    lines.extend(["", "#### 생활형 REVIEW/HOLD 후보"])
+    if daily_hold:
+        for r in daily_hold[:8]:
+            lines.append(
+                f"- **{r['name']}**: stars {r['stars']:,}, "
+                f"lifestyle_score {r['lifestyle_score']}, rec={r['recommendation']}"
+            )
+    else:
+        lines.append("- (해당 없음)")
+
+    # Agent 4: Validation
+    final_pass = [r for r in analyzed if r["status"] == "pass"]
+    final_review = [r for r in analyzed if r["status"] == "review"]
+    daily_influence = [r for r in final_pass if "daily-life" in r["lifestyle_tags"]]
+
+    lines.extend(["", "### Agent 4. 최종 제안"])
     lines.extend([
-        "",
-        "### Agent 3. 최종 제안",
         "- PASS 항목은 즉시 PoC 대상",
         "- REVIEW 항목은 보안/라이선스/운영조건 확인 후 단계적 적용",
         "- HOLD는 주기적 모니터링 대상",
-        "---",
         "",
+        "#### PASS Top",
     ])
+    if final_pass:
+        for r in final_pass:
+            score_str = []
+            if "productivity" in r["tags"]:
+                score_str.append("prod")
+            if "daily-life" in r["lifestyle_tags"]:
+                score_str.append("daily")
+            if not score_str:
+                score_str.append("review-lifestyle blend")
+            lines.append(
+                f"- **{r['name']}**: stars {r['stars']:,}, "
+                f"reason={','.join(score_str)}, rec={r['recommendation']}"
+            )
+    else:
+        lines.append("- (해당 없음)")
+
+    lines.extend(["", "#### REVIEW Top"])
+    if final_review:
+        for r in final_review:
+            lines.append(
+                f"- **{r['name']}**: stars {r['stars']:,}, rec={r['recommendation']}, "
+                f"daily-life={r['lifestyle_score']}"
+            )
+    else:
+        lines.append("- (해당 없음)")
+
+    lines.extend(["", "#### 일상앱 즉시 반영 후보"])
+    if daily_influence:
+        for r in daily_influence:
+            lines.append(f"- **{r['name']}**: {r['url']}")
+    else:
+        lines.append("- (해당 없음)")
+
+    lines.extend(["", "---", ""])
 
     existing = outfile.read_text(encoding="utf-8") if outfile.exists() else ""
     mode = "w" if not existing else "a"
