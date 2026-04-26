@@ -134,39 +134,69 @@ def _recommendation(repo: dict, tags: list[str], pscore: int, iscore: int) -> st
 
 
 def build_report(query: str, repos: list[dict], analyzed: list[dict], buckets: dict[str, list[dict]], outfile: Path) -> None:
-    date = datetime.now().strftime("%Y-%m-%d")
-    lines = [
-        f"# CodexSearcher 조사 보고서 ({date})",
-        "",
-        f"- 생성일: {date}",
+    now = datetime.now()
+    date = now.strftime("%Y-%m-%d")
+    ts = now.strftime("%H:%M:%S")
+
+    lines = []
+    if not outfile.exists():
+        header = [
+            f"# CodexSearcher 조사 보고서",
+            "",
+            f"- 생성일: {date}",
+            "- 목적: 코덱스 관련 GitHub 레포지토리 3에이전트 협업 분석",
+            "",
+            "---",
+        ]
+        lines.extend(header)
+
+    lines.extend([
+        f"## 조사 세션 {ts}",
+        f"- 조사 일시: {now.isoformat(timespec='seconds')}",
         f"- 검색 쿼리: `{query}`",
         f"- 수집 수: {len(repos)}",
         "",
-        "## Agent 1. 탐색 결과",
+        "### Agent 1. 탐색 결과",
         "",
         "| Repo | Stars | Description | URL | Created | Updated |",
         "|---|---:|---|---|---|---|",
-    ]
+    ])
 
     for r in repos:
         desc = (r["description"] or "-").replace("|", "/")
         lines.append(f"| {r['name']} | {r['stars']:,} | {desc} | {r['url']} | {r['created']} | {r['updated']} |")
 
-    lines.extend(["", "## Agent 2. 분석 결과", "", "### PASS"])
+    lines.extend(["", "### Agent 2. 분석 결과", "", "#### PASS"])
     for r in buckets["pass"]:
         lines.append(f"- **{r['name']}**: stars {r['stars']:,}, tag={','.join(r['tags']) or 'none'} => {r['recommendation']}")
 
-    lines.extend(["", "### REVIEW"])
+    lines.extend(["", "#### REVIEW"])
     for r in buckets["review"]:
         lines.append(f"- **{r['name']}**: stars {r['stars']:,}, prod={r['productivity_score']}, indie={r['indie_score']}, rec={r['recommendation']}")
 
-    lines.extend(["", "### HOLD"])
+    lines.extend(["", "#### HOLD"])
     for r in buckets["hold"][:8]:
         lines.append(f"- **{r['name']}**: stars {r['stars']:,}, prod={r['productivity_score']}, indie={r['indie_score']}, rec={r['recommendation']}")
 
-    lines.extend(["", "## Agent 3. 최종 제안", "", "- PASS 항목은 즉시 2주 내 PoC 대상", "- REVIEW 항목은 보안/라이선스/운영조건 확인 후 단계적 적용", "- HOLD는 주기적 모니터링 대상"])    
+    lines.extend([
+        "",
+        "### Agent 3. 최종 제안",
+        "- PASS 항목은 즉시 PoC 대상",
+        "- REVIEW 항목은 보안/라이선스/운영조건 확인 후 단계적 적용",
+        "- HOLD는 주기적 모니터링 대상",
+        "---",
+        "",
+    ])
 
-    outfile.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    existing = outfile.read_text(encoding="utf-8") if outfile.exists() else ""
+    mode = "w" if not existing else "a"
+    with outfile.open(mode, encoding="utf-8") as f:
+        if mode == "w":
+            f.write("\n".join(lines) + "\n")
+        else:
+            if not existing.endswith("\n"):
+                f.write("\n")
+            f.write("\n".join(lines) + "\n")
 
 
 def parse_args() -> argparse.Namespace:
